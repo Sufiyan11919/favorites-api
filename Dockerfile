@@ -1,3 +1,4 @@
+# favorites-api/Dockerfile
 FROM python:3.12-alpine
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
