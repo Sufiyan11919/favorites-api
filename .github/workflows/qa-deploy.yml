@@ -1,4 +1,4 @@
-name: QA Deploy (favourite-api)
+name: Ephemeral QA (favourite-api)
 
 on:
   workflow_run:
@@ -6,50 +6,76 @@ on:
     types: [ completed ]
 
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
+  qa:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
     env:
       IMAGE_REPO: favourite-api
-      IMAGE_SHA: ${{ github.event.workflow_run.head_sha }}
-      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      IMAGE_SHA:  ${{ github.event.workflow_run.head_sha }}
       AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      AMI_ID:     ${{ secrets.AWS_AMI_ID }}
+      SUBNET_ID:  ${{ secrets.AWS_SUBNET_ID }}
+      SG_ID:      ${{ secrets.AWS_SECURITY_GROUP }}
 
     steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Look up QA instance & public IP
-        id: lookup
-        run: |
-          INSTANCE_ID=$(aws ec2 describe-instances \
-            --filters Name=tag:Env,Values=qa Name=instance-state-name,Values=running \
-            --query "Reservations[].Instances[].InstanceId" --output text)
-          [ -z "$INSTANCE_ID" ] && { echo "No QA instance tagged Env=qa"; exit 1; }
-          QA_IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
-            --query "Reservations[].Instances[].PublicIpAddress" --output text)
-          echo "QA_IP=$QA_IP" >> "$GITHUB_ENV"
+    - name: Launch ephemeral EC2
+      id: run
+      run: |
+        IMAGE_URL="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_SHA"
+        # user‑data installs docker and runs your container
+        cat > user-data.txt <<EOF
+        #!/bin/bash
+        yum -y update
+        amazon-linux-extras install docker -y
+        service docker start
+        usermod -a -G docker ec2-user
+        $(aws ecr get-login --no-include-email --region $AWS_REGION)
+        docker pull $IMAGE_URL
+        docker run -d --name $IMAGE_REPO -p 4000:4000 $IMAGE_URL
+        EOF
 
-      - name: Generate ephemeral SSH key
-        run: ssh-keygen -t rsa -b 2048 -f ssh_key -N ''
+        INSTANCE_JSON=$(aws ec2 run-instances \
+          --image-id $AMI_ID \
+          --instance-type t3.micro \
+          --subnet-id $SUBNET_ID \
+          --security-group-ids $SG_ID \
+          --user-data file://user-data.txt \
+          --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=qa-$IMAGE_REPO},{Key=Ephemeral,Value=true}]" \
+          --query 'Instances[0]' \
+          --output json)
 
-      - name: Push public key via EC2 Instance‑Connect
-        run: |
-          AZ=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
-            --query "Reservations[].Instances[].Placement.AvailabilityZone" --output text)
-          aws ec2-instance-connect send-ssh-public-key \
-            --instance-id "$INSTANCE_ID" \
-            --availability-zone "$AZ" \
-            --instance-os-user ec2-user \
-            --ssh-public-key file://ssh_key.pub
+        INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId')
+        PUBLIC_IP=$(echo  "$INSTANCE_JSON" | jq -r '.NetworkInterfaces[0].Association.PublicIp')
 
-      - name: Deploy container on QA
-        run: |
-          chmod 600 ssh_key
-          IMAGE_URL="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_SHA"
-          ssh -o StrictHostKeyChecking=no -i ssh_key ec2-user@"$QA_IP" \
-            "bash /home/ec2-user/deploy/qa/deploy.sh $IMAGE_URL"
+        echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
+        echo "PUBLIC_IP=$PUBLIC_IP"     >> "$GITHUB_ENV"
+
+    - name: Wait for instance health checks
+      run: |
+        aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID"
+        echo "Instance $INSTANCE_ID is healthy."
+
+    - name: API smoke test
+      run: |
+        for i in {1..30}; do
+          sleep 10
+          if curl -fsS "http://$PUBLIC_IP:4000/" >/dev/null; then
+            echo "✅ Application responded." && exit 0
+          fi
+          echo "Waiting ($i)..."
+        done
+        echo "❌ Service did not respond in time." && exit 1
+
+    - name: Terminate instance
+      if: always()
+      run: |
+        aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
+        echo "Instance $INSTANCE_ID terminated."
