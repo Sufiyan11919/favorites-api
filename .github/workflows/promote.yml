@@ -1,3 +1,4 @@
+#favourite-api/.github/workflows/promote.yml
 name: Promote favourite-api tag
 
 on:
