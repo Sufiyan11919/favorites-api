@@ -11,111 +11,106 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # ---------- hard‑coded AWS resources ----------
-      AWS_REGION:       us-east-2
-      AWS_ACCOUNT_ID:   "943347376383"
-      AMI_ID:           ami-0303c7b2e7066b60d
-      SUBNET_ID:        subnet-01e57530dab3c1fa4
-      SG_ID:            sg-0b48177b7af157ddd
-      KEY_NAME:         mykey            # key‑pair already in this region
-      # ---------- compose & health ----------
-      IMAGE_TAG:        latest
-      HEALTH_PORT:      "4000"
-      COMPOSE_FILE_NAME: docker-compose.qa.yaml
-      IMG_API:         weather-api
-      IMG_FAV:         favourite-api
-      IMG_FE:          weather-frontend
+      # hard‑coded instance resources
+      AMI_ID:   ami-0303c7b2e7066b60d
+      SUBNET_ID: subnet-01e57530dab3c1fa4
+      SG_ID:     sg-0b48177b7af157ddd
+      KEY_NAME:  myKey
+
+      # compose / health
+      IMAGE_TAG: latest
+      HEALTH_PORT: "4000"
+      COMPOSE_FILE: docker-compose.qa.yaml
+
+      # ECR repo names
+      IMG_API:  weather-api
+      IMG_FAV:  favourite-api
+      IMG_FE:   weather-frontend
 
     steps:
-    # 0 – SSH key for later
-    - name: Write PEM
-      run: |
-        echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
-        chmod 600 key.pem
+      - name: Write PEM
+        run: |
+          echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
+          chmod 600 key.pem
 
-    # 1 – AWS creds
-    - name: Configure AWS creds
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region:            ${{ env.AWS_REGION }}
+      - name: Configure AWS creds
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
 
-    # 2 – Launch EC2 with Docker & Compose pre‑installed
-    - name: Launch EC2
-      id: launch
-      shell: bash
-      run: |
-        cat > user-data.txt <<'EOF'
-        #!/bin/bash
-        yum -y update
-        amazon-linux-extras install docker -y
-        service docker start
-        curl -L https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64 \
-             -o /usr/local/bin/docker-compose && chmod +x /usr/local/bin/docker-compose
-        usermod -aG docker ec2-user
-        EOF
+      - name: Launch EC2
+        shell: bash
+        run: |
+          cat > user-data.txt <<'EOF'
+          #!/bin/bash
+          yum -y update
+          amazon-linux-extras install docker -y
+          service docker start
+          curl -L https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64 \
+               -o /usr/local/bin/docker-compose && chmod +x /usr/local/bin/docker-compose
+          usermod -aG docker ec2-user
+          EOF
+          INSTANCE_JSON=$(aws ec2 run-instances \
+            --image-id "$AMI_ID" --instance-type t3.micro --key-name "$KEY_NAME" \
+            --subnet-id "$SUBNET_ID" --security-group-ids "$SG_ID" \
+            --associate-public-ip-address --user-data file://user-data.txt \
+            --query 'Instances[0]' --output json)
+          INSTANCE_ID=$(jq -r '.InstanceId' <<<"$INSTANCE_JSON")
+          echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
 
-        INSTANCE_JSON=$(aws ec2 run-instances \
-          --image-id "$AMI_ID" \
-          --instance-type t3.micro \
-          --key-name "$KEY_NAME" \
-          --subnet-id "$SUBNET_ID" \
-          --security-group-ids "$SG_ID" \
-          --associate-public-ip-address \
-          --user-data file://user-data.txt \
-          --query 'Instances[0]' --output json)
+      - name: Wait & fetch IP
+        run: |
+          aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID"
+          PUBLIC_IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)
+          echo "PUBLIC_IP=$PUBLIC_IP" >> $GITHUB_ENV
 
-        INSTANCE_ID=$(jq -r '.InstanceId' <<<"$INSTANCE_JSON")
-        PUBLIC_IP=$(jq  -r '.PublicIpAddress' <<<"$INSTANCE_JSON")
-        echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
-        echo "PUBLIC_IP=$PUBLIC_IP"     >> $GITHUB_ENV
+      - name: Create compose & copy
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION:     ${{ secrets.AWS_REGION }}
+        run: |
+          cat > $COMPOSE_FILE <<EOF
+          version: "3"
+          services:
+            api:
+              image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMG_API:$IMAGE_TAG
+              ports: ["3000:3000"]
+            favourite:
+              image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMG_FAV:$IMAGE_TAG
+              ports: ["4000:4000"]
+            frontend:
+              image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMG_FE:$IMAGE_TAG
+              ports: ["80:80"]
+          EOF
+          scp -o StrictHostKeyChecking=no -i key.pem $COMPOSE_FILE ec2-user@"$PUBLIC_IP":~
 
-    - name: Wait status checks
-      run: aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID"
+      - name: Run compose
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          AWS_REGION:     ${{ secrets.AWS_REGION }}
+        run: |
+          ssh -o StrictHostKeyChecking=no -i key.pem ec2-user@"$PUBLIC_IP" <<SSH
+            aws ecr get-login-password --region $AWS_REGION \
+              | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+            docker-compose -f $COMPOSE_FILE pull
+            docker-compose -f $COMPOSE_FILE up -d
+          SSH
 
-    # 3 – Create compose file locally & copy
-    - name: Create compose file
-      run: |
-        cat > $COMPOSE_FILE_NAME <<EOF
-        version: "3"
-        services:
-          api:
-            image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMG_API:$IMAGE_TAG
-            ports: ["3000:3000"]
-          favourite:
-            image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMG_FAV:$IMAGE_TAG
-            ports: ["4000:4000"]
-          frontend:
-            image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMG_FE:$IMAGE_TAG
-            ports: ["80:80"]
-        EOF
-        scp -o StrictHostKeyChecking=no -i key.pem $COMPOSE_FILE_NAME ec2-user@"$PUBLIC_IP":~
+      - name: Smoke test
+        run: |
+          for i in {1..30}; do
+            sleep 10
+            if curl -fsS "http://$PUBLIC_IP:$HEALTH_PORT/" >/dev/null; then
+              echo "✅ healthy"; exit 0; fi
+            echo "retry $i…"
+          done
+          echo "❌ health check failed"; exit 1
 
-    # 4 – SSH, login to ECR, pull & run compose
-    - name: Run compose
-      run: |
-        ssh -o StrictHostKeyChecking=no -i key.pem ec2-user@"$PUBLIC_IP" <<SSH
-          aws ecr get-login-password --region $AWS_REGION \
-            | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
-          docker-compose -f $COMPOSE_FILE_NAME pull
-          docker-compose -f $COMPOSE_FILE_NAME up -d
-        SSH
-
-    # 5 – Smoke test
-    - name: Smoke test
-      run: |
-        for i in {1..30}; do
-          sleep 10
-          if curl -fsS "http://$PUBLIC_IP:$HEALTH_PORT/" >/dev/null 2>&1; then
-            echo "✅ healthy"; exit 0; fi
-          echo "waiting $i..."
-        done
-        echo "❌ health check failed"; exit 1
-
-    # 6 – Terminate
-    - name: Terminate EC2
-      if: always()
-      run: |
-        aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
-        aws ec2 wait instance-terminated --instance-ids "$INSTANCE_ID"
+      - name: Terminate EC2
+        if: always()
+        run: |
+          aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
+          aws ec2 wait instance-terminated --instance-ids "$INSTANCE_ID"
