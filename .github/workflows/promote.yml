@@ -1,0 +1,71 @@
+name: Promote favourite-api tag
+
+on:
+  push:
+    tags:
+      - 'v*.*.*-rc.*'   # 1.2.0-rc.1, rc.2 …
+      - 'v*.*.*'        # 1.2.0, 1.3.5 …
+
+env:
+  SERVICE: favourite-api
+  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  AWS_REGION:     ${{ secrets.AWS_REGION }}
+  INFRA_REPO:     your-org/weather-infra        # ← change org if needed
+  GH_PAT:         ${{ secrets.PAT_TO_UPDATE_INFRA }}
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Derive variables
+        id: vars
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "TAG=$TAG"               >> $GITHUB_OUTPUT
+          SHA="${GITHUB_SHA}"
+          echo "SHA=$SHA"               >> $GITHUB_OUTPUT
+
+      - name: Retag image in ECR (no rebuild)
+        env:
+          TAG: ${{ steps.vars.outputs.TAG }}
+          SHA: ${{ steps.vars.outputs.SHA }}
+        run: |
+          # pull manifest for the SHA-tagged image created by Build workflow
+          aws ecr batch-get-image \
+            --repository-name $SERVICE \
+            --image-ids imageTag=$SHA \
+            --query 'images[0].imageManifest' \
+            --output text > manifest.json
+
+          # push the same manifest with the new TAG (rc or GA)
+          aws ecr put-image \
+            --repository-name $SERVICE \
+            --image-tag $TAG \
+            --image-manifest file://manifest.json
+
+      - name: Clone infra repo and bump image tag
+        env:
+          TAG: ${{ steps.vars.outputs.TAG }}
+        run: |
+          git config --global user.email "bot@example.com"
+          git config --global user.name  "promotion-bot"
+          git clone https://$GH_PAT@github.com/${INFRA_REPO}.git
+          cd weather-infra
+
+          # choose path based on rc vs GA
+          if [[ "$TAG" == *"-rc."* ]]; then
+            FILE=environments/uat/$SERVICE/values.yaml
+          else
+            FILE=environments/prod/$SERVICE/values.yaml
+          fi
+
+          BRANCH="bump/${SERVICE}-${TAG}"
+          git switch -c "$BRANCH"
+          sed -i "s/tag:.*/tag: \"$TAG\"/" "$FILE"
+          git commit -am "Promote $SERVICE → $TAG"
+          git push -u origin "$BRANCH"
+
+          # open PR (needs the gh cli)
+          gh pr create --title "Promote $SERVICE $TAG" \
+                       --body  "Automated tag promotion" \
+                       --head  "$BRANCH" --base main
