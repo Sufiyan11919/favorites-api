@@ -2,58 +2,54 @@ name: QA Deploy (favourite-api)
 
 on:
   workflow_run:
-    workflows: [ 'Build & Push (favourite-api)' ]
+    workflows: [ "Build & Push (favourite-api)" ]
     types: [ completed ]
 
 jobs:
   deploy:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     env:
-      IMAGE_REPO:     favourite-api
-      IMAGE_SHA:      ${{ github.event.workflow_run.head_sha }}
-      AWS_REGION:     ${{ secrets.AWS_REGION }}
+      IMAGE_REPO: favourite-api
+      IMAGE_SHA: ${{ github.event.workflow_run.head_sha }}
       AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
 
     steps:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ env.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Look up QA instance and public IP
+      - name: Look up QA instance & public IP
         id: lookup
         run: |
           INSTANCE_ID=$(aws ec2 describe-instances \
             --filters Name=tag:Env,Values=qa Name=instance-state-name,Values=running \
             --query "Reservations[].Instances[].InstanceId" --output text)
-          if [ -z "$INSTANCE_ID" ]; then
-            echo "❌ No running instance found with tag Env=qa"; exit 1
-          fi
-          QA_IP=$(aws ec2 describe-instances \
-            --instance-ids $INSTANCE_ID \
+          [ -z "$INSTANCE_ID" ] && { echo "No QA instance tagged Env=qa"; exit 1; }
+          QA_IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
             --query "Reservations[].Instances[].PublicIpAddress" --output text)
-          echo "QA_IP=$QA_IP" >> $GITHUB_ENV
+          echo "QA_IP=$QA_IP" >> "$GITHUB_ENV"
 
-      - name: Generate ephemeral SSH keypair
+      - name: Generate ephemeral SSH key
         run: ssh-keygen -t rsa -b 2048 -f ssh_key -N ''
 
       - name: Push public key via EC2 Instance‑Connect
         run: |
-          AZ=$(aws ec2 describe-instances \
-            --instance-ids $INSTANCE_ID \
+          AZ=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
             --query "Reservations[].Instances[].Placement.AvailabilityZone" --output text)
           aws ec2-instance-connect send-ssh-public-key \
-            --instance-id       $INSTANCE_ID \
-            --availability-zone $AZ \
-            --instance-os-user  ec2-user \
-            --ssh-public-key    file://ssh_key.pub
+            --instance-id "$INSTANCE_ID" \
+            --availability-zone "$AZ" \
+            --instance-os-user ec2-user \
+            --ssh-public-key file://ssh_key.pub
 
-      - name: Deploy container on QA via SSH
+      - name: Deploy container on QA
         run: |
           chmod 600 ssh_key
-          IMAGE_URL="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE_REPO}:${IMAGE_SHA}"
-          ssh -o StrictHostKeyChecking=no -i ssh_key ec2-user@${QA_IP} \
+          IMAGE_URL="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_SHA"
+          ssh -o StrictHostKeyChecking=no -i ssh_key ec2-user@"$QA_IP" \
             "bash /home/ec2-user/deploy/qa/deploy.sh $IMAGE_URL"
