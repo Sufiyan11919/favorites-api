@@ -1,22 +1,27 @@
-name: Deploy to QA EC2
+name: Deploy to QA EC2 (favourite‑api)
+
 on:
   workflow_run:
-    workflows: [Build & Push]
-    types:
-      - completed
+    workflows: [ Build & Push (favourite‑api) ]
+    types: [ completed ]
 
 jobs:
   deploy:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+    env:
+      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      AWS_REGION:     ${{ secrets.AWS_REGION }}
+      IMAGE_REPO:     favourite-api
+      IMAGE_SHA:      ${{ github.event.workflow_run.head_sha }}
+
     steps:
     - name: Deploy via SSH
-      uses: appleboy/ssh-action@v1.0.0
+      uses: appleboy/ssh-action@v1
       with:
-        host: ${{ secrets.QA_EC2_HOST }}
+        host:     ${{ secrets.QA_EC2_HOST }}
         username: ec2-user
-        key: ${{ secrets.QA_EC2_KEY }}
+        key:      ${{ secrets.QA_EC2_KEY }}
         script: |
-          IMAGE_SHA={{ github.event.workflow_run.head_sha }}
-          IMAGE="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/favourite-api:$IMAGE_SHA"
-          bash deploy/qa/deploy.sh $IMAGE
+          IMAGE="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_SHA"
+          bash deploy/qa/deploy.sh "$IMAGE"

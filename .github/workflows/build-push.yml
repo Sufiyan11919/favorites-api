@@ -1,32 +1,42 @@
-name: Build & Push
+name: Build & Push (favourite‑api)
+
 on:
   push:
-    branches: [main]
+    branches: [ main ]
   pull_request:
-    branches: [main]
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
       IMAGE_REPO: favourite-api
+      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      AWS_REGION:     ${{ secrets.AWS_REGION }}
+
     steps:
     - uses: actions/checkout@v4
 
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+        aws-region:            ${{ secrets.AWS_REGION }}
 
-    - name: Login to Amazon ECR
+    - name: Login to Amazon ECR
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build and push image
+    - name: Ensure ECR repository exists
       run: |
-        IMAGE_TAG=${{ github.sha }}
+        aws ecr describe-repositories --repository-names "$IMAGE_REPO" \
+          || aws ecr create-repository \
+               --repository-name "$IMAGE_REPO" \
+               --image-scanning-configuration scanOnPush=true
+
+    - name: Build & push Docker image
+      env:
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
         docker build -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_TAG .
-        docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_TAG
+        docker push     $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_TAG
