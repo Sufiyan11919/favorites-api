@@ -1,4 +1,5 @@
 # favorites-api/app.py
+# This is a simple Flask app that provides an API for managing favorite cities.
 import os
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
