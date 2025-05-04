@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-svc="$1" 
+svc="$1"
 sha="$2"
 
-# Who owns infra
+# Who owns infra (assuming same org/user)
 OWNER="${GITHUB_REPOSITORY%%/*}"
 
 # Clone infra using your PAT
@@ -22,14 +22,22 @@ chmod +x scripts/*.sh
 # Bump the image tag in k8s/base
 ./scripts/prod_apply.sh "$svc" "$sha"
 
-# Force‑push that branch back to origin (overwriting any stale branch)
+# Force‑push this branch
 git push --force-with-lease --set-upstream origin "$branch"
 
-# Create the PR and explicitly pass --head so GH CLI knows what branch to use
-gh pr create \
-  --repo "${OWNER}/weather-infra" \
-  --title "Promote ${svc}:${sha::7}" \
-  --body "auto‑promote ${svc} → ${sha}" \
-  --base main \
-  --head "$branch" \
-  --label promote-qa
+# Create the PR, capture its number
+PR_NUMBER=$(
+  gh pr create \
+    --repo "${OWNER}/weather-infra" \
+    --title "Promote ${svc}:${sha::7}" \
+    --body "auto‑promote ${svc} → ${sha}" \
+    --base main \
+    --head "$branch" \
+    --json number \
+    --jq .number
+)
+
+# Post a comment telling you to add the label when ready
+gh pr comment "$PR_NUMBER" \
+  --body "🛠  CI has opened this PR with your updated image tag for **${svc}**.  
+When you’re ready to run QA, please add the **`promote-qa`** label to this PR."
