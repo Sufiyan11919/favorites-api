@@ -14,7 +14,7 @@ jobs:
       # ---------- hard‑coded AWS resources ----------
       AWS_REGION:       us-east-2
       AWS_ACCOUNT_ID:   "943347376383"
-      AMI_ID:           ami-0fc5d935ebf8bc3bc
+      AMI_ID:           ami‑0303c7b2e7066b60d
       SUBNET_ID:        subnet-01e57530dab3c1fa4
       SG_ID:            sg-0b48177b7af157ddd
       KEY_NAME:         mykey            # key‑pair already in this region
