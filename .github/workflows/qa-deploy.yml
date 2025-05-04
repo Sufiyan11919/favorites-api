@@ -15,7 +15,7 @@ jobs:
       AMI_ID:   ami-0303c7b2e7066b60d
       SUBNET_ID: subnet-01e57530dab3c1fa4
       SG_ID:     sg-0b48177b7af157ddd
-      KEY_NAME:  myKey
+      KEY_NAME:  mykey
 
       # compose / health
       IMAGE_TAG: latest
