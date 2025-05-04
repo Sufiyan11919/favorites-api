@@ -35,8 +35,7 @@ jobs:
           QA_IP=$(aws ec2 describe-instances \
             --instance-ids $INSTANCE_ID \
             --query "Reservations[].Instances[].PublicIpAddress" --output text)
-          echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
-          echo "QA_IP=$QA_IP"           >> $GITHUB_ENV
+          echo "QA_IP=$QA_IP" >> $GITHUB_ENV
 
       - name: Generate ephemeral SSH keypair
         run: ssh-keygen -t rsa -b 2048 -f ssh_key -N ''
