@@ -1,32 +1,22 @@
-name: Build & Push
+name: Deploy to QA EC2
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_run:
+    workflows: [Build & Push]
+    types:
+      - completed
 
 jobs:
-  build:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
-    env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-      IMAGE_REPO: favourite-api
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
+    - name: Deploy via SSH
+      uses: appleboy/ssh-action@v1.0.0
       with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
-
-    - name: Login to Amazon ECR
-      uses: aws-actions/amazon-ecr-login@v2
-
-    - name: Build and push image
-      run: |
-        IMAGE_TAG=${{ github.sha }}
-        docker build -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_TAG .
-        docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_TAG
+        host: ${{ secrets.QA_EC2_HOST }}
+        username: ec2-user
+        key: ${{ secrets.QA_EC2_KEY }}
+        script: |
+          IMAGE_SHA={{ github.event.workflow_run.head_sha }}
+          IMAGE="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/favourite-api:$IMAGE_SHA"
+          bash deploy/qa/deploy.sh $IMAGE
