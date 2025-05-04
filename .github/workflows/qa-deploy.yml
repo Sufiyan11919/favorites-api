@@ -1,4 +1,4 @@
-name: Ephemeral QA (favourite-api)
+name: Ephemeral QA Compose (favourite-api)
 
 on:
   workflow_run:
@@ -9,73 +9,113 @@ jobs:
   qa:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+
     env:
-      IMAGE_REPO: favourite-api
-      IMAGE_SHA:  ${{ github.event.workflow_run.head_sha }}
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-      AMI_ID:     ${{ secrets.AWS_AMI_ID }}
-      SUBNET_ID:  ${{ secrets.AWS_SUBNET_ID }}
-      SG_ID:      ${{ secrets.AWS_SECURITY_GROUP }}
+      # ---------- hard‑coded AWS resources ----------
+      AWS_REGION:       us-east-2
+      AWS_ACCOUNT_ID:   "943347376383"
+      AMI_ID:           ami-0fc5d935ebf8bc3bc
+      SUBNET_ID:        subnet-01e57530dab3c1fa4
+      SG_ID:            sg-0b48177b7af157ddd
+      KEY_NAME:         mykey            # key‑pair already in this region
+      # ---------- compose & health ----------
+      IMAGE_TAG:        latest
+      HEALTH_PORT:      "4000"
+      COMPOSE_FILE_NAME: docker-compose.qa.yaml
+      IMG_API:         weather-api
+      IMG_FAV:         favourite-api
+      IMG_FE:          weather-frontend
 
     steps:
-    - name: Configure AWS credentials
+    # 0 – SSH key for later
+    - name: Write PEM
+      run: |
+        echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
+        chmod 600 key.pem
+
+    # 1 – AWS creds
+    - name: Configure AWS creds
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region:            ${{ env.AWS_REGION }}
 
-    - name: Launch ephemeral EC2
-      id: run
+    # 2 – Launch EC2 with Docker & Compose pre‑installed
+    - name: Launch EC2
+      id: launch
+      shell: bash
       run: |
-        IMAGE_URL="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_SHA"
-        # user‑data installs docker and runs your container
-        cat > user-data.txt <<EOF
+        cat > user-data.txt <<'EOF'
         #!/bin/bash
         yum -y update
         amazon-linux-extras install docker -y
         service docker start
-        usermod -a -G docker ec2-user
-        $(aws ecr get-login --no-include-email --region $AWS_REGION)
-        docker pull $IMAGE_URL
-        docker run -d --name $IMAGE_REPO -p 4000:4000 $IMAGE_URL
+        curl -L https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64 \
+             -o /usr/local/bin/docker-compose && chmod +x /usr/local/bin/docker-compose
+        usermod -aG docker ec2-user
         EOF
 
         INSTANCE_JSON=$(aws ec2 run-instances \
-          --image-id $AMI_ID \
+          --image-id "$AMI_ID" \
           --instance-type t3.micro \
-          --subnet-id $SUBNET_ID \
-          --security-group-ids $SG_ID \
+          --key-name "$KEY_NAME" \
+          --subnet-id "$SUBNET_ID" \
+          --security-group-ids "$SG_ID" \
+          --associate-public-ip-address \
           --user-data file://user-data.txt \
-          --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=qa-$IMAGE_REPO},{Key=Ephemeral,Value=true}]" \
-          --query 'Instances[0]' \
-          --output json)
+          --query 'Instances[0]' --output json)
 
-        INSTANCE_ID=$(echo "$INSTANCE_JSON" | jq -r '.InstanceId')
-        PUBLIC_IP=$(echo  "$INSTANCE_JSON" | jq -r '.NetworkInterfaces[0].Association.PublicIp')
+        INSTANCE_ID=$(jq -r '.InstanceId' <<<"$INSTANCE_JSON")
+        PUBLIC_IP=$(jq  -r '.PublicIpAddress' <<<"$INSTANCE_JSON")
+        echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
+        echo "PUBLIC_IP=$PUBLIC_IP"     >> $GITHUB_ENV
 
-        echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
-        echo "PUBLIC_IP=$PUBLIC_IP"     >> "$GITHUB_ENV"
+    - name: Wait status checks
+      run: aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID"
 
-    - name: Wait for instance health checks
+    # 3 – Create compose file locally & copy
+    - name: Create compose file
       run: |
-        aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID"
-        echo "Instance $INSTANCE_ID is healthy."
+        cat > $COMPOSE_FILE_NAME <<EOF
+        version: "3"
+        services:
+          api:
+            image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMG_API:$IMAGE_TAG
+            ports: ["3000:3000"]
+          favourite:
+            image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMG_FAV:$IMAGE_TAG
+            ports: ["4000:4000"]
+          frontend:
+            image: $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMG_FE:$IMAGE_TAG
+            ports: ["80:80"]
+        EOF
+        scp -o StrictHostKeyChecking=no -i key.pem $COMPOSE_FILE_NAME ec2-user@"$PUBLIC_IP":~
 
-    - name: API smoke test
+    # 4 – SSH, login to ECR, pull & run compose
+    - name: Run compose
+      run: |
+        ssh -o StrictHostKeyChecking=no -i key.pem ec2-user@"$PUBLIC_IP" <<SSH
+          aws ecr get-login-password --region $AWS_REGION \
+            | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+          docker-compose -f $COMPOSE_FILE_NAME pull
+          docker-compose -f $COMPOSE_FILE_NAME up -d
+        SSH
+
+    # 5 – Smoke test
+    - name: Smoke test
       run: |
         for i in {1..30}; do
           sleep 10
-          if curl -fsS "http://$PUBLIC_IP:4000/" >/dev/null; then
-            echo "✅ Application responded." && exit 0
-          fi
-          echo "Waiting ($i)..."
+          if curl -fsS "http://$PUBLIC_IP:$HEALTH_PORT/" >/dev/null 2>&1; then
+            echo "✅ healthy"; exit 0; fi
+          echo "waiting $i..."
         done
-        echo "❌ Service did not respond in time." && exit 1
+        echo "❌ health check failed"; exit 1
 
-    - name: Terminate instance
+    # 6 – Terminate
+    - name: Terminate EC2
       if: always()
       run: |
         aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
-        echo "Instance $INSTANCE_ID terminated."
+        aws ec2 wait instance-terminated --instance-ids "$INSTANCE_ID"

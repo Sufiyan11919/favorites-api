@@ -11,26 +11,34 @@ jobs:
     runs-on: ubuntu-latest
     env:
       IMAGE_REPO: favourite-api
-      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-      IMAGE_TAG: ${{ github.sha }}
+      AWS_REGION: us-east-2
+      AWS_ACCOUNT_ID: "943347376383"
+      IMAGE_SHA: ${{ github.sha }}
 
     steps:
       - uses: actions/checkout@v4
-      - name: Configure AWS credentials
+
+      - name: Configure AWS creds
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Login to Amazon ECR
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
-      - name: Ensure ECR repository exists
+
+      - name: Ensure repo exists
         run: |
           aws ecr describe-repositories --repository-names "$IMAGE_REPO" \
             || aws ecr create-repository --repository-name "$IMAGE_REPO" \
                  --image-scanning-configuration scanOnPush=true
-      - name: Build & push Docker image
+
+      - name: Build & push (latest + sha)
         run: |
-          docker build -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_TAG .
-          docker push   $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_TAG
+          docker build -t $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_SHA .
+          # also tag as latest
+          docker tag  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_SHA \
+                      $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:latest
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:$IMAGE_SHA
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_REPO:latest
