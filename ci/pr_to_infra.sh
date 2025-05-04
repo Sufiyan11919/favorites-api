@@ -1,36 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 1) parameters
-svc="$1"
+svc="$1" 
 sha="$2"
 
-# 2) who owns the infra repo? (assumes same org/user)
+# Who owns infra
 OWNER="${GITHUB_REPOSITORY%%/*}"
 
-# 3) clone using the PAT we passed in as GITHUB_TOKEN
+# Clone infra using your PAT
 git clone --depth=1 \
   "https://x-access-token:${GITHUB_TOKEN}@github.com/${OWNER}/weather-infra.git"
 cd weather-infra
 
-# 4) create your branch
+# New branch
 branch="update-${svc}-${sha::7}"
 git checkout -b "$branch"
 
-# 5) ensure scripts are executable
+# Make sure our prod helper is executable
 chmod +x scripts/*.sh
 
-# 6) bump the image tag in k8s/base
+# Bump the image tag in k8s/base
 ./scripts/prod_apply.sh "$svc" "$sha"
 
-# 7) push back to infra repo
-git push --set-upstream origin "$branch"
+# Force‑push that branch back to origin (overwriting any stale branch)
+git push --force-with-lease --set-upstream origin "$branch"
 
-# 8) open the PR pointing at main with the label to kick off QA
+# Create the PR and explicitly pass --head so GH CLI knows what branch to use
 gh pr create \
   --repo "${OWNER}/weather-infra" \
-  --head "${OWNER}:${branch}" \
+  --title "Promote ${svc}:${sha::7}" \
+  --body "auto‑promote ${svc} → ${sha}" \
   --base main \
-  --title  "Promote ${svc}:${sha::7}" \
-  --body   "auto‐promote ${svc} → ${sha::7}" \
-  --label  promote-qa
+  --head "$branch" \
+  --label promote-qa
