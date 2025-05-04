@@ -1,5 +1,5 @@
 #favorites-api/.github/workflows/publih-to-ecr.yml
-name: Build & Publish Favorites‑API
+name: Build & Publish favorites-api
 
 on:
   push:
@@ -9,10 +9,10 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     env:
-      ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+      ECR_REGISTRY:   ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
       ECR_REPOSITORY: favorites-api
       IMAGE_TAG_LATEST: latest
-      IMAGE_TAG_SHA: ${{ github.sha }}
+      IMAGE_TAG_SHA:    ${{ github.sha }}
 
     steps:
     - name: Checkout code
@@ -42,3 +42,8 @@ jobs:
         tags: |
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG_LATEST }}
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG_SHA }}
+
+    - name: Open PR to infra for QA
+      run: bash ci/pr_to_infra.sh "${{ env.ECR_REPOSITORY }}" "${{ github.sha }}"
+      env:
+        GITHUB_TOKEN: ${{ secrets.PAT_TO_UPDATE_INFRA }}
