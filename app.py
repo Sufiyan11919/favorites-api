@@ -1,17 +1,16 @@
-# favorites-api/app.py
-# This is a simple Flask app that provides an API for managing favorite cities.
-import os
+# favourites-api/app.py
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy.exc import IntegrityError          # ← new
-from dotenv import load_dotenv
-load_dotenv()
+from sqlalchemy.exc import IntegrityError
+import os
+
+# ---- hard-coded fallbacks (can be overridden by env vars) ----
+DB_URL = os.getenv("DB_URL", "sqlite:///favourites.db")   # no DB server needed
+PORT   = int(os.getenv("PORT", 4000))                     # K8s probes 4000
+# -------------------------------------------------------------
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv(
-    "DB_URL",
-    "mysql+pymysql://root:example@db/weatherdb"    # default inside Compose
-)
+app.config["SQLALCHEMY_DATABASE_URI"] = DB_URL
 db = SQLAlchemy(app)
 
 class Favorite(db.Model):
@@ -21,6 +20,12 @@ class Favorite(db.Model):
     __table_args__ = (db.UniqueConstraint("user_email", "city",
                                           name="uix_email_city"),)
 
+# ---------- health endpoint for readiness/liveness ----------
+@app.route("/")
+def ping():
+    return "ok", 200
+# ------------------------------------------------------------
+
 @app.route("/api/fav", methods=["GET"])
 def list_fav():
     email = request.args.get("user", "demo@example.com")
@@ -29,7 +34,7 @@ def list_fav():
 
 @app.route("/api/fav", methods=["POST"])
 def add_fav():
-    data = request.get_json(force=True, silent=True) or {}
+    data  = request.get_json(force=True, silent=True) or {}
     email = data.get("user", "demo@example.com")
     city  = data.get("city")
     if not city:
@@ -38,9 +43,9 @@ def add_fav():
         db.session.add(Favorite(user_email=email, city=city))
         db.session.commit()
         return jsonify(status="saved")
-    except IntegrityError:                          # ← new
+    except IntegrityError:
         db.session.rollback()
-        return jsonify(error="already saved"), 409 # HTTP 409 Conflict
+        return jsonify(error="already saved"), 409
 
 @app.route("/api/fav", methods=["DELETE"])
 def del_fav():
@@ -52,5 +57,5 @@ def del_fav():
 
 if __name__ == "__main__":
     with app.app_context():
-        db.create_all()
-    app.run(host="0.0.0.0", port=5000)
+        db.create_all()               # creates SQLite file if it doesn't exist
+    app.run(host="0.0.0.0", port=PORT)
