@@ -1,15 +1,15 @@
-name: Promote weather-frontend tag
+name: Promote favourite-api tag
 
 on:
   push:
     tags:
-      - 'v*.*.*-rc.*'   # RC → UAT
+      - 'v*.*.*-rc.*'   # RC  → UAT
 
 env:
-  SERVICE: weather-frontend
+  SERVICE: favourite-api
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   AWS_REGION:     ${{ secrets.AWS_REGION }}
-  INFRA_REPO:     Sufiyan11919/weather-infra   # ← update if repo moves
+  INFRA_REPO:     Sufiyan11919/weather-infra
   GH_PAT:         ${{ secrets.PAT_TO_UPDATE_INFRA }}
 
 jobs:
@@ -17,21 +17,22 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Derive tag & sha
-      id: vars
+    #──── derive TAG (v2.0.0-rc.1) and SHA (commit) ──────────────────────
+    - id: vars
+      name: Derive tag & sha
       run: |
         echo "TAG=${GITHUB_REF#refs/tags/}"  >> $GITHUB_OUTPUT
         echo "SHA=${GITHUB_SHA}"            >> $GITHUB_OUTPUT
 
-    # ────── AWS creds to retag in ECR ───────────────────────────
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
+    #──── AWS credentials ────────────────────────────────────────────────
+    - uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region:            ${{ env.AWS_REGION }}
 
-    - name: Retag ${{ env.SERVICE }} image in ECR
+    #──── retag SHA → version tag in ECR ─────────────────────────────────
+    - name: Retag image in ECR
       env:
         TAG: ${{ steps.vars.outputs.TAG }}
         SHA: ${{ steps.vars.outputs.SHA }}
@@ -43,11 +44,9 @@ jobs:
           --repository-name $SERVICE --image-tag $TAG \
           --image-manifest file://manifest.json
 
-    # ────── Bump tag in infra repo & open PR ───────────────────
-    - name: Install GitHub CLI
-      run: sudo apt-get update -y && sudo apt-get install -y gh
-
-    - name: Create bump PR in infra repo
+    #──── bump values.yaml & open PR in infra repo ───────────────────────
+    - run: sudo apt-get update -y && sudo apt-get install -y gh
+    - name: Create bump PR
       env:
         TAG: ${{ steps.vars.outputs.TAG }}
       run: |
@@ -58,14 +57,8 @@ jobs:
         git clone https://$GH_PAT@github.com/${INFRA_REPO}.git
         cd weather-infra
 
-        # decide environment dir based on tag
-        if [[ "$TAG" == *"-rc."* ]]; then
-          ENV_DIR="uat"
-        else
-          ENV_DIR="prod"
-        fi
-
-        FILE=${ENV_DIR}/environments/${SERVICE}/values.yaml   # ← new path
+        [[ "$TAG" == *"-rc."* ]] && ENV_DIR="uat" || ENV_DIR="prod"
+        FILE=${ENV_DIR}/environments/${SERVICE}/values.yaml
         BRANCH="bump-${SERVICE}-${TAG}"
 
         git switch -c "$BRANCH"
@@ -73,8 +66,6 @@ jobs:
         git commit -am "Promote $SERVICE → $TAG"
         git push -u origin "$BRANCH"
 
-        gh pr create \
-          --title  "Promote $SERVICE → $TAG" \
-          --body   "Automated tag promotion" \
-          --head   "$BRANCH" \
-          --base   main
+        gh pr create --title "Promote $SERVICE → $TAG" \
+                     --body  "Automated tag promotion" \
+                     --head  "$BRANCH" --base main
