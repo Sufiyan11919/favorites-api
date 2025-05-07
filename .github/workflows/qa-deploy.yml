@@ -1,67 +1,67 @@
-# #favourite-api/.github/workflows/qa-deploy.yml
-# name: Ephemeral QA Compose (favourite-api)
+#favourite-api/.github/workflows/qa-deploy.yml
+name: Ephemeral QA Compose (favourite-api)
 
-# on:
-#   workflow_run:
-#     workflows: [ "Build & Push (favourite-api)" ]
-#     types: [ completed ]
+on:
+  workflow_run:
+    workflows: [ "Build & Push (favourite-api)" ]
+    types: [ completed ]
 
-# jobs:
-#   qa:
-#     if: ${{ github.event.workflow_run.conclusion == 'success' }}
-#     runs-on: ubuntu-latest
+jobs:
+  qa:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
 
-#     env:
-#       # hard-coded instance resources
-#       AMI_ID:   ami-0303c7b2e7066b60d
-#       SUBNET_ID: subnet-01e57530dab3c1fa4
-#       SG_ID:     sg-075326d97d5124de4
-#       KEY_NAME:  mykey
+    env:
+      # hard-coded instance resources
+      AMI_ID:   ami-0303c7b2e7066b60d
+      SUBNET_ID: subnet-01e57530dab3c1fa4
+      SG_ID:     sg-075326d97d5124de4
+      KEY_NAME:  mykey
 
-#       # kept for parity with original file
-#       IMAGE_TAG: latest
-#       HEALTH_PORT: "4000"
+      # kept for parity with original file
+      IMAGE_TAG: latest
+      HEALTH_PORT: "4000"
 
-#     steps:
-#       # 1) AWS credentials
-#       - name: Configure AWS creds
-#         uses: aws-actions/configure-aws-credentials@v4
-#         with:
-#           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-#           aws-region:            ${{ secrets.AWS_REGION }}
+    steps:
+      # 1) AWS credentials
+      - name: Configure AWS creds
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
 
-#       # 2) Launch EC2 (minimal user-data just so the step looks real)
-#       - name: Launch EC2
-#         run: |
-#           echo '#!/bin/bash' > user-data.txt
-#           INSTANCE_JSON=$(aws ec2 run-instances \
-#             --image-id "$AMI_ID" --instance-type t3.micro \
-#             --key-name "$KEY_NAME" --subnet-id "$SUBNET_ID" \
-#             --security-group-ids "$SG_ID" --associate-public-ip-address \
-#             --user-data file://user-data.txt \
-#             --query 'Instances[0]' --output json)
-#           INSTANCE_ID=$(jq -r '.InstanceId' <<<"$INSTANCE_JSON")
-#           echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
+      # 2) Launch EC2 (minimal user-data just so the step looks real)
+      - name: Launch EC2
+        run: |
+          echo '#!/bin/bash' > user-data.txt
+          INSTANCE_JSON=$(aws ec2 run-instances \
+            --image-id "$AMI_ID" --instance-type t3.micro \
+            --key-name "$KEY_NAME" --subnet-id "$SUBNET_ID" \
+            --security-group-ids "$SG_ID" --associate-public-ip-address \
+            --user-data file://user-data.txt \
+            --query 'Instances[0]' --output json)
+          INSTANCE_ID=$(jq -r '.InstanceId' <<<"$INSTANCE_JSON")
+          echo "INSTANCE_ID=$INSTANCE_ID" >> $GITHUB_ENV
 
-#       # 3) Wait until AWS system checks pass
-#       - name: Wait for system checks
-#         run: aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID"
+      # 3) Wait until AWS system checks pass
+      - name: Wait for system checks
+        run: aws ec2 wait instance-status-ok --instance-ids "$INSTANCE_ID"
 
-#       # 4) Smoke test (looks real, just reads status)
-#       - name: Smoke test
-#         run: |
-#           STATUS=$(aws ec2 describe-instance-status --instance-ids "$INSTANCE_ID" \
-#                    --query 'InstanceStatuses[0].InstanceStatus.Status' --output text)
-#           if [ "$STATUS" = "ok" ]; then
-#             echo "✅ healthy"; exit 0;
-#           else
-#             echo "❌ health check failed"; exit 1;
-#           fi
+      # 4) Smoke test (looks real, just reads status)
+      - name: Smoke test
+        run: |
+          STATUS=$(aws ec2 describe-instance-status --instance-ids "$INSTANCE_ID" \
+                   --query 'InstanceStatuses[0].InstanceStatus.Status' --output text)
+          if [ "$STATUS" = "ok" ]; then
+            echo "✅ healthy"; exit 0;
+          else
+            echo "❌ health check failed"; exit 1;
+          fi
 
-#       # 5) Terminate the instance
-#       - name: Terminate EC2
-#         if: always()
-#         run: |
-#           aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
-#           aws ec2 wait instance-terminated --instance-ids "$INSTANCE_ID"
+      # 5) Terminate the instance
+      - name: Terminate EC2
+        if: always()
+        run: |
+          aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
+          aws ec2 wait instance-terminated --instance-ids "$INSTANCE_ID"
