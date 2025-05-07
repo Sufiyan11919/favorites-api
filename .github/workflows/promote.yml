@@ -1,30 +1,30 @@
-#favourite-api/.github/workflows/promote.yml
-name: Promote favourite-api tag
+name: Promote weather-frontend tag
 
 on:
   push:
     tags:
-      - 'v*.*.*-rc.*'   # 1.2.0-rc.1 …
-      - 'v*.*.*'        # 1.2.0 …
+      - 'v*.*.*-rc.*'   # RC → UAT
+      - 'v*.*.*'        # GA → Prod
 
 env:
-  SERVICE: favourite-api
+  SERVICE: weather-frontend
   AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
   AWS_REGION:     ${{ secrets.AWS_REGION }}
-  INFRA_REPO:     Sufiyan11919/weather-infra   # ← change if needed
+  INFRA_REPO:     Sufiyan11919/weather-infra   # ← update if repo moves
   GH_PAT:         ${{ secrets.PAT_TO_UPDATE_INFRA }}
 
 jobs:
   promote:
     runs-on: ubuntu-latest
-    steps:
 
+    steps:
     - name: Derive tag & sha
       id: vars
       run: |
         echo "TAG=${GITHUB_REF#refs/tags/}"  >> $GITHUB_OUTPUT
         echo "SHA=${GITHUB_SHA}"            >> $GITHUB_OUTPUT
 
+    # ────── AWS creds to retag in ECR ───────────────────────────
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -32,7 +32,7 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region:            ${{ env.AWS_REGION }}
 
-    - name: Retag image in ECR (no rebuild)
+    - name: Retag ${{ env.SERVICE }} image in ECR
       env:
         TAG: ${{ steps.vars.outputs.TAG }}
         SHA: ${{ steps.vars.outputs.SHA }}
@@ -44,10 +44,11 @@ jobs:
           --repository-name $SERVICE --image-tag $TAG \
           --image-manifest file://manifest.json
 
+    # ────── Bump tag in infra repo & open PR ───────────────────
     - name: Install GitHub CLI
       run: sudo apt-get update -y && sudo apt-get install -y gh
 
-    - name: Bump tag in infra repo & open PR
+    - name: Create bump PR in infra repo
       env:
         TAG: ${{ steps.vars.outputs.TAG }}
       run: |
@@ -58,17 +59,23 @@ jobs:
         git clone https://$GH_PAT@github.com/${INFRA_REPO}.git
         cd weather-infra
 
-        ENV_DIR=$( [[ "$TAG" == *"-rc."* ]] && echo uat || echo prod )
-        FILE=environments/${ENV_DIR}/${SERVICE}/values.yaml
+        # decide environment dir based on tag
+        if [[ "$TAG" == *"-rc."* ]]; then
+          ENV_DIR="uat"
+        else
+          ENV_DIR="prod"
+        fi
+
+        FILE=${ENV_DIR}/environments/${SERVICE}/values.yaml   # ← new path
         BRANCH="bump-${SERVICE}-${TAG}"
 
         git switch -c "$BRANCH"
-        sed -i "s/tag:.*/tag: \"$TAG\"/" "$FILE"
+        sed -i "s|tag:.*|tag: \"$TAG\"|" "$FILE"
         git commit -am "Promote $SERVICE → $TAG"
         git push -u origin "$BRANCH"
 
         gh pr create \
-          --title  "Promote $SERVICE $TAG" \
+          --title  "Promote $SERVICE → $TAG" \
           --body   "Automated tag promotion" \
           --head   "$BRANCH" \
           --base   main
