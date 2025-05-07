@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - 'v*.*.*-rc.*'   # RC → UAT
-      - 'v*.*.*'        # GA → Prod
 
 env:
   SERVICE: weather-frontend
