@@ -49,6 +49,7 @@ def add_fav():
 
 
 # @app.route("/api/fav", methods=["PUT"])
+# @app.route("/api/fav", methods=["PUT"])
 @app.route("/api/fav", methods=["DELETE"])
 def del_fav():
     email = request.args.get("user", "demo@example.com")
