@@ -47,7 +47,7 @@ def add_fav():
         db.session.rollback()
         return jsonify(error="already saved"), 409
 
-
+# @app.route("/api/fav", methods=["PUT"])
 # @app.route("/api/fav", methods=["PUT"])
 # @app.route("/api/fav", methods=["PUT"])
 @app.route("/api/fav", methods=["DELETE"])
