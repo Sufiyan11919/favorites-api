@@ -1,4 +1,5 @@
 #favourite-api/deploy/qa/deploy.sh
+
 #!/usr/bin/env bash
 IMAGE=$1
 CONTAINER_NAME=favourite-api
